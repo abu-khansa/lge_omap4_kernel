@@ -30,10 +30,7 @@
 #include <linux/mutex.h>
 #include <linux/delay.h>
 #include <linux/string.h>
-#include <linux/platform_device.h>
-#include <linux/regulator/consumer.h>
-#include <linux/pm_runtime.h>
-#include <linux/clk.h>
+#include <linux/gpio.h>
 #include <video/omapdss.h>
 #include <video/hdmi_ti_4xxx_ip.h>
 #include <linux/gpio.h>
@@ -61,7 +58,24 @@ static struct {
 	bool custom_set;
 	enum hdmi_deep_color_mode deep_color;
 	struct hdmi_config cfg;
-	struct regulator *hdmi_reg;
+
+	int hpd_gpio;
+	bool phy_tx_enabled;
+} hdmi;
+
+/*
+ * Logic for the below structure :
+ * user enters the CEA or VESA timings by specifying the HDMI/DVI code.
+ * There is a correspondence between CEA/VESA timing and code, please
+ * refer to section 6.3 in HDMI 1.3 specification for timing code.
+ *
+ * In the below structure, cea_vesa_timings corresponds to all OMAP4
+ * supported CEA and VESA timing values.code_cea corresponds to the CEA
+ * code, It is used to get the timing from cea_vesa_timing array.Similarly
+ * with code_vesa. Code_index is used for back mapping, that is once EDID
+ * is read from the TV, EDID is parsed to find the timing values and then
+ * map it to corresponding CEA or VESA index.
+ */
 
 	int hdmi_irq;
 	struct clk *sys_clk;
@@ -181,11 +195,66 @@ int hdmi_get_s3d_disp_type(struct omap_dss_device *dssdev, struct s3d_disp_info 
         return hdmi.s3d_type;
 }
 
-EXPORT_SYMBOL(hdmi_enable_s3d);
-EXPORT_SYMBOL(hdmi_get_s3d_enabled);
-EXPORT_SYMBOL(hdmi_set_s3d_disp_type);
-EXPORT_SYMBOL(hdmi_get_s3d_disp_type);
-#endif
+static int hdmi_check_hpd_state(void)
+{
+	unsigned long flags;
+	bool hpd;
+	int r;
+	/* this should be in ti_hdmi_4xxx_ip private data */
+	static DEFINE_SPINLOCK(phy_tx_lock);
+
+	spin_lock_irqsave(&phy_tx_lock, flags);
+
+	hpd = gpio_get_value(hdmi.hpd_gpio);
+
+	if (hpd == hdmi.phy_tx_enabled) {
+		spin_unlock_irqrestore(&phy_tx_lock, flags);
+		return 0;
+	}
+
+	if (hpd)
+		r = hdmi_set_phy_pwr(HDMI_PHYPWRCMD_TXON);
+	else
+		r = hdmi_set_phy_pwr(HDMI_PHYPWRCMD_LDOON);
+
+	if (r) {
+		DSSERR("Failed to %s PHY TX power\n",
+				hpd ? "enable" : "disable");
+		goto err;
+	}
+
+	hdmi.phy_tx_enabled = hpd;
+err:
+	spin_unlock_irqrestore(&phy_tx_lock, flags);
+	return r;
+}
+
+static irqreturn_t hpd_irq_handler(int irq, void *data)
+{
+	hdmi_check_hpd_state();
+
+	return IRQ_HANDLED;
+}
+
+static int hdmi_phy_init(void)
+{
+	u16 r = 0;
+
+	r = hdmi_set_phy_pwr(HDMI_PHYPWRCMD_LDOON);
+	if (r)
+		return r;
+
+	/*
+	 * Read address 0 in order to get the SCP reset done completed
+	 * Dummy access performed to make sure reset is done
+	 */
+	hdmi_read_reg(HDMI_TXPHY_TX_CTRL);
+
+	/*
+	 * Write to phy address 0 to configure the clock
+	 * use HFBITCLK write HDMI_TXPHY_TX_CONTROL_FREQOUT field
+	 */
+	REG_FLD_MOD(HDMI_TXPHY_TX_CTRL, 0x1, 31, 30);
 
 static int hdmi_runtime_get(void)
 {
@@ -198,9 +267,25 @@ static int hdmi_runtime_get(void)
 		if (r)
 			goto err_get_dss;
 
-		r = dispc_runtime_get();
-		if (r)
-			goto err_get_dispc;
+	r = request_threaded_irq(gpio_to_irq(hdmi.hpd_gpio),
+			NULL, hpd_irq_handler,
+			IRQF_DISABLED | IRQF_TRIGGER_RISING |
+			IRQF_TRIGGER_FALLING, "hpd", NULL);
+	if (r) {
+		DSSERR("HPD IRQ request failed\n");
+		hdmi_set_phy_pwr(HDMI_PHYPWRCMD_OFF);
+		return r;
+	}
+
+	r = hdmi_check_hpd_state();
+	if (r) {
+		free_irq(gpio_to_irq(hdmi.hpd_gpio), NULL);
+		hdmi_set_phy_pwr(HDMI_PHYPWRCMD_OFF);
+		return r;
+	}
+
+	return 0;
+}
 
 		clk_enable(hdmi.sys_clk);
 		clk_enable(hdmi.hdmi_clk);
@@ -251,20 +336,9 @@ int hdmi_init_display(struct omap_dss_device *dssdev)
 static int relaxed_fb_mode_is_equal(const struct fb_videomode *mode1,
 				    const struct fb_videomode *mode2)
 {
-	u32 ratio1 = mode1->flag & (FB_FLAG_RATIO_4_3 | FB_FLAG_RATIO_16_9);
-	u32 ratio2 = mode2->flag & (FB_FLAG_RATIO_4_3 | FB_FLAG_RATIO_16_9);
-
-	return (mode1->xres         == mode2->xres &&
-		mode1->yres         == mode2->yres &&
-		mode1->pixclock     <= mode2->pixclock * 201 / 200 &&
-		mode1->pixclock     >= mode2->pixclock * 200 / 201 &&
-		mode1->hsync_len + mode1->left_margin + mode1->right_margin ==
-		mode2->hsync_len + mode2->left_margin + mode2->right_margin &&
-		mode1->vsync_len + mode1->upper_margin + mode1->lower_margin ==
-		mode2->vsync_len + mode2->upper_margin + mode2->lower_margin &&
-		(!ratio1 || !ratio2 || ratio1 == ratio2) &&
-		(mode1->vmode & FB_VMODE_INTERLACED) ==
-		(mode2->vmode & FB_VMODE_INTERLACED));
+	free_irq(gpio_to_irq(hdmi.hpd_gpio), NULL);
+	hdmi_set_phy_pwr(HDMI_PHYPWRCMD_OFF);
+	hdmi.phy_tx_enabled = false;
 }
 
 static int hdmi_set_timings(struct fb_videomode *vm, bool check_only)
@@ -949,6 +1023,7 @@ void omapdss_hdmi_display_set_timing(struct omap_dss_device *dssdev)
 
 int omapdss_hdmi_display_enable(struct omap_dss_device *dssdev)
 {
+	struct omap_dss_hdmi_data *priv = dssdev->data;
 	int r = 0;
 
 	HDMIDBG("ENTER hdmi_display_enable  hdmi.enabled=%d\n", hdmi.enabled);
@@ -956,8 +1031,12 @@ int omapdss_hdmi_display_enable(struct omap_dss_device *dssdev)
 
 	mutex_lock(&hdmi.lock);
 
+<<<<<<< HEAD
 	if (hdmi.enabled)
 		goto err0;
+=======
+	hdmi.hpd_gpio = priv->hpd_gpio;
+>>>>>>> 21189f0... OMAPDSS: HDMI: PHY burnout fix
 
 	r = omap_dss_start_device(dssdev);
 	if (r) {
