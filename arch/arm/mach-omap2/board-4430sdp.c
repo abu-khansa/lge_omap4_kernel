@@ -68,19 +68,7 @@
 #define OMAP4_SFH7741_ENABLE_GPIO		188
 #define HDMI_GPIO_CT_CP_HPD 60 /* HPD mode enable/disable */
 #define HDMI_GPIO_LS_OE 41 /* Level shifter for HDMI */
-#define LCD_BL_GPIO		27	/* LCD Backlight GPIO */
-/* PWM2 and TOGGLE3 register offsets */
-#define LED_PWM2ON		0x03
-#define LED_PWM2OFF		0x04
-#define TWL6030_TOGGLE3		0x92
-
-#define TPS62361_GPIO   7
-
-#define GPIO_WIFI_PMENA		54
-#define GPIO_WIFI_IRQ		53
-#define OMAP_HDMI_HPD_ADDR	0x4A100098
-#define OMAP_HDMI_PULLTYPE_MASK	0x00000010
-
+#define HDMI_GPIO_HPD  63 /* Hotplug detect */
 
 static const int sdp4430_keymap[] = {
 	KEY(0, 0, KEY_E),
@@ -831,6 +819,7 @@ static void sdp4430_hdmi_mux_init(void)
 static struct gpio sdp4430_hdmi_gpios[] = {
 	{ HDMI_GPIO_CT_CP_HPD, GPIOF_OUT_INIT_HIGH, "hdmi_gpio_ct_cp_hpd" },
 	{ HDMI_GPIO_LS_OE,	GPIOF_OUT_INIT_HIGH,	"hdmi_gpio_ls_oe" },
+	{ HDMI_GPIO_HPD, GPIOF_DIR_IN, "hdmi_gpio_hpd" },
 };
 
 	gpio_request(HDMI_GPIO_HPD, NULL);
@@ -890,6 +879,7 @@ static void omap_4430sdp_display_init(void)
 
 	omap_mux_init_gpio(HDMI_GPIO_LS_OE, OMAP_PIN_OUTPUT);
 	omap_mux_init_gpio(HDMI_GPIO_CT_CP_HPD, OMAP_PIN_OUTPUT);
+	omap_mux_init_gpio(HDMI_GPIO_HPD, OMAP_PIN_INPUT_PULLDOWN);
 }
 
 #ifdef CONFIG_OMAP_MUX
