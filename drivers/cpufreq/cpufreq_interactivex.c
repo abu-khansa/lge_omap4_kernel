@@ -201,7 +201,7 @@ static void cpufreq_interactivex_freq_change_time_work(struct work_struct *work)
 {
 	unsigned int cpu;
 	unsigned int newtarget;
-	cpumask_t tmp_mask = work_cpumask;
+	cpumask_t *tmp_mask = &work_cpumask;
 	newtarget = freq_threshld;
 
 	for_each_cpu(cpu, tmp_mask) {

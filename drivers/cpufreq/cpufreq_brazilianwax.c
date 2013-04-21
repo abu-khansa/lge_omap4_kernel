@@ -316,7 +316,7 @@ static void cpufreq_brazilianwax_freq_change_time_work(struct work_struct *work)
 	struct brazilianwax_info_s *this_brazilianwax;
 	struct cpufreq_policy *policy;
 	unsigned int relation = CPUFREQ_RELATION_L;
-	cpumask_t tmp_mask = work_cpumask;
+	cpumask_t *tmp_mask = &work_cpumask;
 	for_each_cpu(cpu, tmp_mask) {
 		this_brazilianwax = &per_cpu(brazilianwax_info, cpu);
 		policy = this_brazilianwax->cur_policy;
