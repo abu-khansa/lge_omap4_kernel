@@ -280,7 +280,6 @@ asmlinkage void __cpuinit secondary_start_kernel(void)
 	struct mm_struct *mm = &init_mm;
 	unsigned int cpu = smp_processor_id();
 	static bool booted;
-	unsigned int cpu;
 
 	/*
 	 * The identity mapping is uncached (strongly ordered), so
